@@ -74,3 +74,5 @@ end
 gem "faker", "~> 2.19"
 
 gem "rubocop", "~> 1.25", require: false
+
+gem "devise"
