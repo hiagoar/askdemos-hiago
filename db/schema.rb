@@ -15,6 +15,7 @@ ActiveRecord::Schema[7.0].define(version: 2022_02_20_125853) do
     t.string "name", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.index ["name"], name: "index_inboxes_on_name", unique: true
   end
 
 end
