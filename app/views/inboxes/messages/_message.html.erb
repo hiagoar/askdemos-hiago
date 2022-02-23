@@ -14,4 +14,6 @@
     <%= message.user.email %>
   </p>
 
+  <%= button_to "Destroy", inbox_message_path(@inbox, message), method: :delete %>
+
 </div>
