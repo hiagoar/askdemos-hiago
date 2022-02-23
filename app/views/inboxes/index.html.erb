@@ -1,14 +1,8 @@
-<h1>Inboxes</h1>
+<h1>
+  Inboxes:
+  <%= @inboxes.length %>
+</h1>
 
 <div id="inboxes">
-  <% @inboxes.each do |inbox| %>
-    <div class="scaffold_record">
-      <%= render inbox %>
-      <p>
-        <%= link_to "Show this inbox", inbox %>
-      </p>
-    </div>
-  <% end %>
+  <%= render @inboxes %>
 </div>
-
-<%= link_to "New inbox", new_inbox_path %>
