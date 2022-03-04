@@ -100,6 +100,8 @@ GEM
     erubi (1.10.0)
     faker (2.19.0)
       i18n (>= 1.6, < 2)
+    friendly_id (5.4.2)
+      activerecord (>= 4.0.0)
     globalid (1.0.0)
       activesupport (>= 5.0)
     i18n (1.10.0)
@@ -257,6 +259,7 @@ DEPENDENCIES
   debug
   devise
   faker (~> 2.19)
+  friendly_id (~> 5.4)
   importmap-rails
   jbuilder
   puma (~> 5.0)
