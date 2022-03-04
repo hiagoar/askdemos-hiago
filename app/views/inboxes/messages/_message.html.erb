@@ -9,6 +9,13 @@
     <%= link_to message.inbox.name, message.inbox %>
   </p>
 
+  <% if current_user.voted_for? message %>
+    <%= button_to 'Downvote', [:upvote, @inbox, message], method: :patch, data: { turbo: 'false' } %>
+  <% else %>
+    <%= button_to 'Upvote', [:upvote, @inbox, message], method: :patch, data: { turbo: 'false' } %>
+  <% end %>
+  Total: <%= message.weighted_score %>
+
   <p>
     <strong>User:</strong>
     <%= message.user.email %>

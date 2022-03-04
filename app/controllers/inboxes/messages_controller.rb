@@ -2,6 +2,17 @@ module Inboxes
   class MessagesController < ApplicationController
     before_action :set_inbox
 
+    def upvote
+      @message = @inbox.messages.find(params[:id])
+      flash[:notice] = 'voted!'
+      if current_user.voted_for? @message
+        @message.unliked_by current_user
+      else
+        @message.liked_by current_user
+      end
+      redirect_to @inbox
+    end
+
     # GET /messages/new
     def new
       @message = @inbox.messages.new
