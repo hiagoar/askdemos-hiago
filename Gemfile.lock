@@ -141,7 +141,7 @@ GEM
       net-protocol
       timeout
     nio4r (2.5.8)
-    nokogiri (1.13.1-x64-mingw32)
+    nokogiri (1.13.3-x64-mingw32)
       racc (~> 1.4)
     orm_adapter (0.5.0)
     parallel (1.21.0)
