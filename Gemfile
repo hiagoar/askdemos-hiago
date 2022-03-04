@@ -34,3 +34,4 @@ gem "rubocop", "~> 1.25", require: false
 gem "devise"
 
 gem "acts_as_votable"
+gem "pundit", "~> 2.2"
