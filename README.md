@@ -1,4 +1,4 @@
-This app was built after an YouTube tutorial from SupeRails (https://github.com/yshmarov) - https://www.youtube.com/watch?v=NGPhRmbBVlw&
+This app was built after an YouTube tutorial from SupeRails (https://github.com/yshmarov) - https://www.youtube.com/watch?v=NGPhRmbBVlw& && https://www.youtube.com/watch?v=LWEMPqGhstU
 
 ## Used gems
 1. https://github.com/rubocop/rubocop
