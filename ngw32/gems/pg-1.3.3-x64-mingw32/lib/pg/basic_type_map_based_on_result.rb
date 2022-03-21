@@ -1,7 +1,7 @@
 # -*- ruby -*-
 # frozen_string_literal: true
 
-require 'pg' unless defined?( PG )
+require 'pg' unless defined?(PG)
 
 # Simple set of rules for type casting common PostgreSQL types from Ruby
 # to PostgreSQL.
@@ -33,15 +33,17 @@ require 'pg' unless defined?( PG )
 #   end
 # This inserts a single row into copytable with type casts from ruby to
 # database types.
-class PG::BasicTypeMapBasedOnResult < PG::TypeMapByOid
-	include PG::BasicTypeRegistry::Checker
+module PG
+  class BasicTypeMapBasedOnResult < PG::TypeMapByOid
+    include PG::BasicTypeRegistry::Checker
 
-	def initialize(connection_or_coder_maps, registry: nil)
-		@coder_maps = build_coder_maps(connection_or_coder_maps, registry: registry)
+    def initialize(connection_or_coder_maps, registry: nil)
+      @coder_maps = build_coder_maps(connection_or_coder_maps, registry: registry)
 
-		# Populate TypeMapByOid hash with encoders
-		@coder_maps.each_format(:encoder).flat_map{|f| f.coders }.each do |coder|
-			add_coder(coder)
-		end
-	end
+      # Populate TypeMapByOid hash with encoders
+      @coder_maps.each_format(:encoder).flat_map(&:coders).each do |coder|
+        add_coder(coder)
+      end
+    end
+  end
 end

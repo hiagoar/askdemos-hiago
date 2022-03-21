@@ -7,15 +7,12 @@ require 'pg'
 # This is a minimal example of a function that can test an existing PG::Connection and
 # reset it if necessary.
 
-def check_connection( conn )
-	begin
-		conn.exec( "SELECT 1" )
-	rescue PG::Error => err
-		$stderr.puts "%p while testing connection: %s" % [ err.class, err.message ]
-		conn.reset
-	end
+def check_connection(conn)
+  conn.exec('SELECT 1')
+rescue PG::Error => e
+  warn format('%p while testing connection: %s', e.class, e.message)
+  conn.reset
 end
 
-conn = PG.connect( dbname: 'test' )
-check_connection( conn )
-
+conn = PG.connect(dbname: 'test')
+check_connection(conn)

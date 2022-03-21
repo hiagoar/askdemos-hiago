@@ -35,7 +35,6 @@
 # called 'warehouse'.
 #
 
-
 require 'date'
 require 'ostruct'
 require 'optparse'
@@ -43,90 +42,81 @@ require 'pathname'
 require 'etc'
 require 'pg'
 
-
 ### A tablespace migration class.
 ###
 class PGWarehouse
+  def initialize(opts)
+    @opts = opts
+    @db = PG.connect(
+      dbname: opts.database,
+      host: opts.host,
+      port: opts.port,
+      user: opts.user,
+      password: opts.pass,
+      sslmode: 'prefer'
+    )
+    @db.exec format('SET search_path TO %s', opts.schema) if opts.schema
 
-	def initialize( opts )
-		@opts = opts
-		@db = PG.connect(
-			:dbname   => opts.database,
-			:host     => opts.host,
-			:port     => opts.port,
-			:user     => opts.user,
-			:password => opts.pass,
-			:sslmode  => 'prefer'
-		)
-		@db.exec "SET search_path TO %s" % [ opts.schema ] if opts.schema
+    @relations = relations
+  end
 
-		@relations = self.relations
-	end
+  attr_reader :db
 
-	attr_reader :db
+  ######
 
-	######
-	public
-	######
+  ######
 
-	### Perform the tablespace moves.
-	###
-	def migrate
-		if @relations.empty?
-			$stderr.puts 'No tables were found for warehousing.'
-			return
-		end
+  ### Perform the tablespace moves.
+  ###
+  def migrate
+    if @relations.empty?
+      warn 'No tables were found for warehousing.'
+      return
+    end
 
-		$stderr.puts "Found %d relation%s to move." % [ relations.length, relations.length == 1 ? '' : 's' ]
-		@relations.sort_by{|_,v| v[:name] }.each do |_, val|
-			$stderr.print "  - Moving table '%s' to '%s'... "  % [
-				val[:name], @opts.tablespace
-			]
+    warn format('Found %d relation%s to move.', relations.length, relations.length == 1 ? '' : 's')
+    @relations.sort_by { |_, v| v[:name] }.each do |_, val|
+      $stderr.print format("  - Moving table '%s' to '%s'... ", val[:name], @opts.tablespace)
 
-			if @opts.dryrun
-				$stderr.puts '(not really)'
+      if @opts.dryrun
+        warn '(not really)'
 
-			else
-				age = self.timer do
-					db.exec "ALTER TABLE %s SET TABLESPACE %s;" % [
-						val[:name], @opts.tablespace
-					]
-				end
-				puts age
-			end
+      else
+        age = timer do
+          db.exec format('ALTER TABLE %s SET TABLESPACE %s;', val[:name], @opts.tablespace)
+        end
+        puts age
+      end
 
-			val[ :indexes ].each do |idx|
-				$stderr.print "      - Moving index '%s' to '%s'... "  % [
-					idx, @opts.tablespace
-				]
-				if @opts.dryrun
-					$stderr.puts '(not really)'
+      val[:indexes].each do |idx|
+        $stderr.print format("      - Moving index '%s' to '%s'... ", idx, @opts.tablespace)
+        if @opts.dryrun
+          warn '(not really)'
 
-				else
-					age = self.timer do
-						db.exec "ALTER INDEX %s SET TABLESPACE %s;" % [
-							idx, @opts.tablespace
-						]
-					end
-					puts age
-				end
-			end
-		end
-	end
+        else
+          age = timer do
+            db.exec format('ALTER INDEX %s SET TABLESPACE %s;', idx, @opts.tablespace)
+          end
+          puts age
+        end
+      end
+    end
+  end
 
+  #########
+  protected
 
-	#########
-	protected
-	#########
+  #########
 
-	### Get OIDs and current tablespaces for everything under the
-	### specified schema.
-	###
-	def relations
-		return @relations if @relations
-		relations = {}
+  ### Get OIDs and current tablespaces for everything under the
+  ### specified schema.
+  ###
+  def relations
+    return @relations if @relations
 
-		query =  %q{
+    relations = {}
+
+    query = "
 			SELECT c.oid AS oid,
 				c.relname AS name,
 				c.relkind AS kind,
@@ -134,178 +124,171 @@ class PGWarehouse
 			FROM pg_class AS c
 			LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
 			LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace
-			WHERE c.relkind = 'r' }
-		query << "AND n.nspname='#{@opts.schema}'" if @opts.schema
+			WHERE c.relkind = 'r' "
+    query << "AND n.nspname='#{@opts.schema}'" if @opts.schema
 
-		# Get the relations list, along with each element's current tablespace.
-		#
-		self.db.exec( query ) do |res|
-			res.each do |row|
-				relations[ row['oid'] ] = {
-					:name       => row['name'],
-					:tablespace => row['tspace'],
-					:indexes    => [],
-					:parent     => nil
-				}
-			end
-		end
+    # Get the relations list, along with each element's current tablespace.
+    #
+    db.exec(query) do |res|
+      res.each do |row|
+        relations[ row['oid'] ] = {
+          name: row['name'],
+          tablespace: row['tspace'],
+          indexes: [],
+          parent: nil
+        }
+      end
+    end
 
-		# Add table inheritance information.
-		#
-		db.exec 'SELECT inhrelid AS oid, inhparent AS parent FROM pg_inherits' do |res|
-			res.each do |row|
-				relations[ row['oid'] ][ :parent ] = row['parent']
-			end
-		end
+    # Add table inheritance information.
+    #
+    db.exec 'SELECT inhrelid AS oid, inhparent AS parent FROM pg_inherits' do |res|
+      res.each do |row|
+        relations[row['oid']][ :parent ] = row['parent']
+      end
+    end
 
-		# Remove tables that don't qualify for warehousing.
-		#
-		#   - Tables that are not children of a parent
-		#   - Tables that are already in the warehouse tablespace
-		#   - The currently active child (it's likely being written to!)
-		#   - Any table that can't be parsed into the specified format
-		#
-		relations.reject! do |oid, val|
-			begin
-				val[:parent].nil? ||
-				val[:tablespace] == @opts.tablespace ||
-				val[:name] == Time.now.strftime( @opts.format ) ||
-				! DateTime.strptime( val[:name], @opts.format )
-			rescue ArgumentError
-				true
-			end
-		end
+    # Remove tables that don't qualify for warehousing.
+    #
+    #   - Tables that are not children of a parent
+    #   - Tables that are already in the warehouse tablespace
+    #   - The currently active child (it's likely being written to!)
+    #   - Any table that can't be parsed into the specified format
+    #
+    relations.reject! do |_oid, val|
+      val[:parent].nil? ||
+        val[:tablespace] == @opts.tablespace ||
+        val[:name] == Time.now.strftime(@opts.format) ||
+        !DateTime.strptime(val[:name], @opts.format)
+    rescue ArgumentError
+      true
+    end
 
-		query = %q{
+    query = '
 			SELECT c.oid AS oid,
 				i.indexname AS name
 			FROM pg_class AS c
 			INNER JOIN pg_indexes AS i
-				ON i.tablename = c.relname }
-		query << "AND i.schemaname='#{@opts.schema}'" if @opts.schema
+				ON i.tablename = c.relname '
+    query << "AND i.schemaname='#{@opts.schema}'" if @opts.schema
 
-		# Attach index names to tables.
-		#
-		db.exec( query ) do |res|
-			res.each do |row|
-				relations[ row['oid'] ][ :indexes ] << row['name'] if relations[ row['oid'] ]
-			end
-		end
+    # Attach index names to tables.
+    #
+    db.exec(query) do |res|
+      res.each do |row|
+        relations[row['oid']][:indexes] << row['name'] if relations[row['oid']]
+      end
+    end
 
-		return relations
-	end
+    relations
+  end
 
+  ### Wrap arbitrary commands in a human readable timer.
+  ###
+  def timer
+    start = Time.now
+    yield
+    age = Time.now - start
 
-	### Wrap arbitrary commands in a human readable timer.
-	###
-	def timer
-		start = Time.now
-		yield
-		age = Time.now - start
+    diff = age
+    secs = diff % 60
+    diff = (diff - secs) / 60
+    mins = diff % 60
+    diff = (diff - mins) / 60
+    hour = diff % 24
 
-		diff = age
-		secs = diff % 60
-		diff = ( diff - secs ) / 60
-		mins = diff % 60
-		diff = ( diff - mins ) / 60
-		hour = diff % 24
-
-		return "%02d:%02d:%02d" % [ hour, mins, secs ]
-	end
+    format('%02d:%02d:%02d', hour, mins, secs)
+  end
 end
-
 
 ### Parse command line arguments.  Return a struct of global options.
 ###
-def parse_args( args )
-	options          = OpenStruct.new
-	options.database = Etc.getpwuid( Process.uid ).name
-	options.host     = '127.0.0.1'
-	options.port     = 5432
-	options.user     = Etc.getpwuid( Process.uid ).name
-	options.sslmode  = 'prefer'
-	options.tablespace = 'warehouse'
+def parse_args(args)
+  options = OpenStruct.new
+  options.database = Etc.getpwuid(Process.uid).name
+  options.host     = '127.0.0.1'
+  options.port     = 5432
+  options.user     = Etc.getpwuid(Process.uid).name
+  options.sslmode  = 'prefer'
+  options.tablespace = 'warehouse'
 
-	opts = OptionParser.new do |opts|
-		opts.banner = "Usage: #{$0} [options]"
+  opts = OptionParser.new do |opts|
+    opts.banner = "Usage: #{$PROGRAM_NAME} [options]"
 
-		opts.separator ''
-		opts.separator 'Connection options:'
+    opts.separator ''
+    opts.separator 'Connection options:'
 
-		opts.on( '-d', '--database DBNAME',
-				"specify the database to connect to (default: \"#{options.database}\")" ) do |db|
-			options.database = db
-		end
+    opts.on('-d', '--database DBNAME',
+            "specify the database to connect to (default: \"#{options.database}\")") do |db|
+      options.database = db
+    end
 
-		opts.on( '-h', '--host HOSTNAME', 'database server host' ) do |host|
-			options.host = host
-		end
+    opts.on('-h', '--host HOSTNAME', 'database server host') do |host|
+      options.host = host
+    end
 
-		opts.on( '-p', '--port PORT', Integer,
-				"database server port (default: \"#{options.port}\")" ) do |port|
-			options.port = port
-		end
+    opts.on('-p', '--port PORT', Integer,
+            "database server port (default: \"#{options.port}\")") do |port|
+      options.port = port
+    end
 
-		opts.on( '-n', '--schema SCHEMA', String,
-				"operate on the named schema only (default: none)" ) do |schema|
-			options.schema = schema
-		end
+    opts.on('-n', '--schema SCHEMA', String,
+            'operate on the named schema only (default: none)') do |schema|
+      options.schema = schema
+    end
 
-		opts.on( '-T', '--tablespace SPACE', String,
-				"move old tables to this tablespace (default: \"#{options.tablespace}\")" ) do |tb|
-			options.tablespace = tb
-		end
+    opts.on('-T', '--tablespace SPACE', String,
+            "move old tables to this tablespace (default: \"#{options.tablespace}\")") do |tb|
+      options.tablespace = tb
+    end
 
-		opts.on( '-F', '--tableformat FORMAT', String,
-				"The naming format (strftime) for the inherited tables (default: none)" ) do |format|
-			options.format = format
-		end
+    opts.on('-F', '--tableformat FORMAT', String,
+            'The naming format (strftime) for the inherited tables (default: none)') do |format|
+      options.format = format
+    end
 
-		opts.on( '-U', '--user NAME',
-				"database user name (default: \"#{options.user}\")" ) do |user|
-			options.user = user
-		end
+    opts.on('-U', '--user NAME',
+            "database user name (default: \"#{options.user}\")") do |user|
+      options.user = user
+    end
 
-		opts.on( '-W', 'force password prompt' ) do |pw|
-			print 'Password: '
-			begin
-				system 'stty -echo'
-				options.pass = gets.chomp
-			ensure
-				system 'stty echo'
-				puts
-			end
-		end
+    opts.on('-W', 'force password prompt') do |_pw|
+      print 'Password: '
+      begin
+        system 'stty -echo'
+        options.pass = gets.chomp
+      ensure
+        system 'stty echo'
+        puts
+      end
+    end
 
-		opts.separator ''
-		opts.separator 'Other options:'
+    opts.separator ''
+    opts.separator 'Other options:'
 
-		opts.on_tail( '--dry-run', "don't actually do anything" ) do
-			options.dryrun = true
-		end
+    opts.on_tail('--dry-run', "don't actually do anything") do
+      options.dryrun = true
+    end
 
-		opts.on_tail( '--help', 'show this help, then exit' ) do
-			$stderr.puts opts
-			exit
-		end
+    opts.on_tail('--help', 'show this help, then exit') do
+      warn opts
+      exit
+    end
 
-		opts.on_tail( '--version', 'output version information, then exit' ) do
-			puts Stats::VERSION
-			exit
-		end
-	end
+    opts.on_tail('--version', 'output version information, then exit') do
+      puts Stats::VERSION
+      exit
+    end
+  end
 
-	opts.parse!( args )
-	return options
+  opts.parse!(args)
+  options
 end
 
+if __FILE__ == $PROGRAM_NAME
+  opts = parse_args(ARGV)
+  raise ArgumentError, 'A naming format (-F) is required.' unless opts.format
 
-if __FILE__ == $0
-	opts = parse_args( ARGV )
-	raise ArgumentError, "A naming format (-F) is required." unless opts.format
-
-	$stdout.sync = true
-	PGWarehouse.new( opts ).migrate
+  $stdout.sync = true
+  PGWarehouse.new(opts).migrate
 end
-
-

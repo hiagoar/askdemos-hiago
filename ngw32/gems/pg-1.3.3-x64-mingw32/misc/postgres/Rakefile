@@ -6,16 +6,16 @@ require 'hoe'
 require 'pp'
 
 Hoe.spec 'postgres' do
-	self.developer 'Michael Granger', 'ged@FaerieMUD.org'
-	self.dependency 'pg', '~> 0'
-	self.spec_extras[:date] = Date.parse( '2008/01/30' )
+  developer 'Michael Granger', 'ged@FaerieMUD.org'
+  dependency 'pg', '~> 0'
+  spec_extras[:date] = Date.parse('2008/01/30')
 
-	line = '-' * 75
-	msg = paragraphs_of( 'README.txt', 3..-1 )
-	msg.unshift( line )
-	msg.push( line )
+  line = '-' * 75
+  msg = paragraphs_of('README.txt', 3..-1)
+  msg.unshift(line)
+  msg.push(line)
 
-	self.spec_extras[:post_install_message] = msg.join( "\n\n" ) + "\n"
+  spec_extras[:post_install_message] = "#{msg.join("\n\n")}\n"
 end
 
 # vim: syntax=ruby

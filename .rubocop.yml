@@ -7,6 +7,7 @@ AllCops:
     - 'config.ru'
     - 'Gemfile'
     - 'Rakefile'
+    - 'ngw32/**/*'
 
 Style/FrozenStringLiteralComment:
   Enabled: false

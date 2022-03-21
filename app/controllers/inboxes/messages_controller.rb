@@ -4,18 +4,19 @@ module Inboxes
 
     def upvote
       @message = @inbox.messages.find(params[:id])
-      flash[:notice] = 'voted!'
-      if current_user.voted_for? @message
-        @message.unliked_by current_user
-      else
-        @message.liked_by current_user
-      end
-      redirect_to @inbox
-    end
+      @message.upvote! current_user
+      flash.now[:notice] = 'Voted!'
 
-    # GET /messages/new
-    def new
-      @message = @inbox.messages.new
+      respond_to do |format|
+        format.turbo_stream do
+          render turbo_stream: [
+            render_turbo_flash,
+            turbo_stream.replace(@message,
+                                 partial: 'inboxes/messages/message',
+                                 locals: { message: @message })
+          ]
+        end
+      end
     end
 
     # POST /messages or /messages.json
@@ -24,8 +25,30 @@ module Inboxes
 
       respond_to do |format|
         if @message.save
+          format.turbo_stream do
+            flash.now[:notice] = "Message #{@message.id} created!"
+            render turbo_stream: [
+              render_turbo_flash,
+              turbo_stream.update('new_message',
+                                  partial: 'inboxes/messages/form',
+                                  locals: { message: Message.new }),
+              turbo_stream.update('message_counter', @inbox.messages_count),
+              turbo_stream.prepend('message_list',
+                                   partial: 'inboxes/messages/message',
+                                   locals: { message: @message })
+            ]
+          end
           format.html { redirect_to @inbox, notice: 'Message was successfully created.' }
         else
+          format.turbo_stream do
+            flash.now[:alert] = 'Something went wrong...'
+            render turbo_stream: [
+              render_turbo_flash,
+              turbo_stream.update('new_message',
+                                  partial: 'inboxes/messages/form',
+                                  locals: { message: @message })
+            ]
+          end
           format.html { render :new, status: :unprocessable_entity }
         end
       end
@@ -35,8 +58,9 @@ module Inboxes
     def destroy
       @message = @inbox.messages.find(params[:id])
       @message.destroy
-
       respond_to do |format|
+        flash.now[:notice] = "Message #{@message.id} destroyed!"
+        format.turbo_stream
         format.html { redirect_to @inbox, notice: 'Message was successfully destroyed.' }
       end
     end

@@ -3,16 +3,22 @@ class InboxesController < ApplicationController
   before_action :authorize_inbox, only: %i[edit update destroy]
 
   def index
+    set_meta_tags title: %w[Inboxes All]
     @inboxes = Inbox.all
   end
 
-  def show; end
+  def show
+    set_meta_tags title: ['Inboxes', @inbox.name]
+  end
 
   def new
+    set_meta_tags title: 'Add New Inbox'
     @inbox = Inbox.new
   end
 
-  def edit; end
+  def edit
+    set_meta_tags title: "Editing #{@inbox.name}"
+  end
 
   def create
     @inbox = current_user.inboxes.new(inbox_params)
@@ -55,6 +61,6 @@ class InboxesController < ApplicationController
   end
 
   def inbox_params
-    params.require(:inbox).permit(:name)
+    params.require(:inbox).permit(:name, :theme_color)
   end
 end

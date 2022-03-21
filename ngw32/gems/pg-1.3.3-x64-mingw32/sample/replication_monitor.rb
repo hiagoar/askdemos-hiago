@@ -22,201 +22,190 @@ require 'etc'
 require 'pg'
 require 'pp'
 
-
 ### A class to encapsulate the PG handles.
 ###
 class PGMonitor
+  VERSION = 'Id'.freeze
 
-	VERSION = %q$Id$
+  # When to consider a slave as 'behind', measured in WAL segments.
+  # The default WAL segment size is 16, so we'll alert after
+  # missing two WAL files worth of data.
+  #
+  LAG_ALERT = 32
 
-	# When to consider a slave as 'behind', measured in WAL segments.
-	# The default WAL segment size is 16, so we'll alert after
-	# missing two WAL files worth of data.
-	#
-	LAG_ALERT = 32
+  ### Create a new PGMonitor object.
+  ###
+  def initialize(opts, hosts)
+    @opts        = opts
+    @master      = hosts.shift
+    @slaves      = hosts
+    @current_wal = {}
+    @failures    = []
+  end
 
-	### Create a new PGMonitor object.
-	###
-	def initialize( opts, hosts )
-		@opts        = opts
-		@master      = hosts.shift
-		@slaves      = hosts
-		@current_wal = {}
-		@failures    = []
-	end
+  attr_reader :opts, :current_wal, :master, :slaves, :failures
 
-	attr_reader :opts, :current_wal, :master, :slaves, :failures
+  ### Perform the connections and check the lag.
+  ###
+  def check
+    # clear prior failures, get current xlog info
+    @failures = []
+    return unless get_current_wal
 
+    # check all slaves
+    slaves.each do |slave|
+      slave_db = PG.connect(
+        dbname: opts.database,
+        host: slave,
+        port: opts.port,
+        user: opts.user,
+        password: opts.pass,
+        sslmode: 'prefer'
+      )
 
-	### Perform the connections and check the lag.
-	###
-	def check
-		# clear prior failures, get current xlog info
-		@failures = []
-		return unless self.get_current_wal
+      xlog = slave_db.exec('SELECT pg_last_xlog_receive_location()').getvalue(0, 0)
+      slave_db.close
 
-		# check all slaves
-		self.slaves.each do |slave|
-			begin
-				slave_db = PG.connect(
-					:dbname   => self.opts.database,
-					:host     => slave,
-					:port     => self.opts.port,
-					:user     => self.opts.user,
-					:password => self.opts.pass,
-					:sslmode  => 'prefer'
-				)
+      lag_in_megs = (find_lag(xlog).to_f / 1024 / 1024).abs
+      if lag_in_megs >= LAG_ALERT
+        failures << { host: slave,
+                      error: format('%0.2fMB behind the master.', lag_in_megs) }
+      end
+    rescue StandardError => e
+      failures << { host: slave, error: e.message }
+    end
+  end
 
-				xlog = slave_db.exec( 'SELECT pg_last_xlog_receive_location()' ).getvalue( 0, 0 )
-				slave_db.close
+  #########
+  protected
 
-				lag_in_megs = ( self.find_lag( xlog ).to_f / 1024 / 1024 ).abs
-				if lag_in_megs >= LAG_ALERT
-					failures << { :host => slave,
-						:error => "%0.2fMB behind the master." % [ lag_in_megs ] }
-				end
-			rescue => err
-				failures << { :host => slave, :error => err.message }
-			end
-		end
-	end
+  #########
 
+  ### Ask the master for the current xlog information, to compare
+  ### to slaves.  Returns true on success.  On failure, populates
+  ### the failures array and returns false.
+  ###
+  def get_current_wal
+    master_db = PG.connect(
+      dbname: opts.database,
+      host: master,
+      port: opts.port,
+      user: opts.user,
+      password: opts.pass,
+      sslmode: 'prefer'
+    )
 
-	#########
-	protected
-	#########
+    current_wal[ :segbytes ] = master_db.exec('SHOW wal_segment_size')
+                                        .getvalue(0, 0).sub(/\D+/, '').to_i << 20
 
-	### Ask the master for the current xlog information, to compare
-	### to slaves.  Returns true on success.  On failure, populates
-	### the failures array and returns false.
-	###
-	def get_current_wal
-		master_db = PG.connect(
-			:dbname   => self.opts.database,
-			:host     => self.master,
-			:port     => self.opts.port,
-			:user     => self.opts.user,
-			:password => self.opts.pass,
-			:sslmode  => 'prefer'
-		)
+    current = master_db.exec('SELECT pg_current_xlog_location()').getvalue(0, 0)
+    current_wal[:segment], current_wal[:offset] = current.split(%r{/})
 
-		self.current_wal[ :segbytes ] = master_db.exec( 'SHOW wal_segment_size' ).
-			getvalue( 0, 0 ).sub( /\D+/, '' ).to_i << 20
+    master_db.close
+    true
 
-		current = master_db.exec( 'SELECT pg_current_xlog_location()' ).getvalue( 0, 0 )
-		self.current_wal[ :segment ], self.current_wal[ :offset ] = current.split( /\// )
+  # If we can't get any of the info from the master, then there is no
+  # point in a comparison with slaves.
+  #
+  rescue StandardError => e
+    failures << { host: master,
+                  error: format('Unable to retrieve required info from the master (%s)', e.message) }
 
-		master_db.close
-		return true
+    false
+  end
 
-	# If we can't get any of the info from the master, then there is no
-	# point in a comparison with slaves.
-	#
-	rescue => err
-		self.failures << { :host => self.master,
-			:error => 'Unable to retrieve required info from the master (%s)' % [ err.message ] }
+  ### Given an +xlog+ position from a slave server, return
+  ### the number of bytes the slave needs to replay before it
+  ### is caught up to the master.
+  ###
+  def find_lag(xlog)
+    s_segment, s_offset = xlog.split(%r{/})
+    m_segment  = current_wal[:segment]
+    m_offset   = current_wal[:offset]
+    m_segbytes = current_wal[:segbytes]
 
-		return false
-	end
-
-
-	### Given an +xlog+ position from a slave server, return
-	### the number of bytes the slave needs to replay before it
-	### is caught up to the master.
-	###
-	def find_lag( xlog )
-		s_segment, s_offset = xlog.split( /\// )
-		m_segment  = self.current_wal[ :segment ]
-		m_offset   = self.current_wal[ :offset ]
-		m_segbytes = self.current_wal[ :segbytes ]
-
-		return (( m_segment.hex - s_segment.hex ) * m_segbytes) + ( m_offset.hex - s_offset.hex )
-	end
-
+    ((m_segment.hex - s_segment.hex) * m_segbytes) + (m_offset.hex - s_offset.hex)
+  end
 end
-
 
 ### Parse command line arguments.  Return a struct of global options.
 ###
-def parse_args( args )
-	options          = OpenStruct.new
-	options.database = 'postgres'
-	options.port     = 5432
-	options.user     = Etc.getpwuid( Process.uid ).name
-	options.sslmode  = 'prefer'
+def parse_args(args)
+  options = OpenStruct.new
+  options.database = 'postgres'
+  options.port     = 5432
+  options.user     = Etc.getpwuid(Process.uid).name
+  options.sslmode  = 'prefer'
 
-	opts = OptionParser.new do |opts|
-		opts.banner = "Usage: #{$0} [options] <master> <slave> [slave2, slave3...]"
+  opts = OptionParser.new do |opts|
+    opts.banner = "Usage: #{$PROGRAM_NAME} [options] <master> <slave> [slave2, slave3...]"
 
-		opts.separator ''
-		opts.separator 'Connection options:'
+    opts.separator ''
+    opts.separator 'Connection options:'
 
-		opts.on( '-d', '--database DBNAME',
-				"specify the database to connect to (default: \"#{options.database}\")" ) do |db|
-			options.database = db
-		end
+    opts.on('-d', '--database DBNAME',
+            "specify the database to connect to (default: \"#{options.database}\")") do |db|
+      options.database = db
+    end
 
-		opts.on( '-h', '--host HOSTNAME', 'database server host' ) do |host|
-			options.host = host
-		end
+    opts.on('-h', '--host HOSTNAME', 'database server host') do |host|
+      options.host = host
+    end
 
-		opts.on( '-p', '--port PORT', Integer,
-				"database server port (default: \"#{options.port}\")" ) do |port|
-			options.port = port
-		end
+    opts.on('-p', '--port PORT', Integer,
+            "database server port (default: \"#{options.port}\")") do |port|
+      options.port = port
+    end
 
-		opts.on( '-U', '--user NAME',
-				"database user name (default: \"#{options.user}\")" ) do |user|
-			options.user = user
-		end
+    opts.on('-U', '--user NAME',
+            "database user name (default: \"#{options.user}\")") do |user|
+      options.user = user
+    end
 
-		opts.on( '-W', 'force password prompt' ) do |pw|
-			print 'Password: '
-			begin
-				system 'stty -echo'
-				options.pass = $stdin.gets.chomp
-			ensure
-				system 'stty echo'
-				puts
-			end
-		end
+    opts.on('-W', 'force password prompt') do |_pw|
+      print 'Password: '
+      begin
+        system 'stty -echo'
+        options.pass = $stdin.gets.chomp
+      ensure
+        system 'stty echo'
+        puts
+      end
+    end
 
-		opts.separator ''
-		opts.separator 'Other options:'
+    opts.separator ''
+    opts.separator 'Other options:'
 
-		opts.on_tail( '--help', 'show this help, then exit' ) do
-			$stderr.puts opts
-			exit
-		end
+    opts.on_tail('--help', 'show this help, then exit') do
+      warn opts
+      exit
+    end
 
-		opts.on_tail( '--version', 'output version information, then exit' ) do
-			puts PGMonitor::VERSION
-			exit
-		end
-	end
+    opts.on_tail('--version', 'output version information, then exit') do
+      puts PGMonitor::VERSION
+      exit
+    end
+  end
 
-	opts.parse!( args )
-	return options
+  opts.parse!(args)
+  options
 end
 
+if __FILE__ == $PROGRAM_NAME
+  opts = parse_args(ARGV)
+  raise ArgumentError, 'At least two PostgreSQL servers are required.' if ARGV.length < 2
 
+  mon = PGMonitor.new(opts, ARGV)
 
-if __FILE__ == $0
-	opts = parse_args( ARGV )
-	raise ArgumentError, "At least two PostgreSQL servers are required." if ARGV.length < 2
-	mon = PGMonitor.new( opts, ARGV )
-
-	mon.check
-	if mon.failures.empty?
-		puts "All is well!"
-		exit 0
-	else
-		puts "Database replication delayed or broken."
-		mon.failures.each do |bad|
-			puts "%s: %s" % [ bad[ :host ], bad[ :error ] ]
-		end
-		exit 1
-	end
+  mon.check
+  if mon.failures.empty?
+    puts 'All is well!'
+    exit 0
+  else
+    puts 'Database replication delayed or broken.'
+    mon.failures.each do |bad|
+      puts format('%s: %s', bad[:host], bad[:error])
+    end
+    exit 1
+  end
 end
-
-

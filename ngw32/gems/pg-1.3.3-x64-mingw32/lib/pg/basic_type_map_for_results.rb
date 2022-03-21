@@ -1,7 +1,7 @@
 # -*- ruby -*-
 # frozen_string_literal: true
 
-require 'pg' unless defined?( PG )
+require 'pg' unless defined?(PG)
 
 # Simple set of rules for type casting common PostgreSQL types to Ruby.
 #
@@ -47,35 +47,37 @@ require 'pg' unless defined?( PG )
 #   ["a", 123, [5, 4, 3]]
 #
 # See also PG::BasicTypeMapBasedOnResult for the encoder direction and PG::BasicTypeRegistry for the definition of additional types.
-class PG::BasicTypeMapForResults < PG::TypeMapByOid
-	include PG::BasicTypeRegistry::Checker
+module PG
+  class BasicTypeMapForResults < PG::TypeMapByOid
+    include PG::BasicTypeRegistry::Checker
 
-	class WarningTypeMap < PG::TypeMapInRuby
-		def initialize(typenames)
-			@already_warned = Hash.new{|h, k| h[k] = {} }
-			@typenames_by_oid = typenames
-		end
+    class WarningTypeMap < PG::TypeMapInRuby
+      def initialize(typenames)
+        @already_warned = Hash.new { |h, k| h[k] = {} }
+        @typenames_by_oid = typenames
+      end
 
-		def typecast_result_value(result, _tuple, field)
-			format = result.fformat(field)
-			oid = result.ftype(field)
-			unless @already_warned[format][oid]
-				warn "Warning: no type cast defined for type #{@typenames_by_oid[oid].inspect} format #{format} with oid #{oid}. Please cast this type explicitly to TEXT to be safe for future changes."
-				 @already_warned[format][oid] = true
-			end
-			super
-		end
-	end
+      def typecast_result_value(result, _tuple, field)
+        format = result.fformat(field)
+        oid = result.ftype(field)
+        unless @already_warned[format][oid]
+          warn "Warning: no type cast defined for type #{@typenames_by_oid[oid].inspect} format #{format} with oid #{oid}. Please cast this type explicitly to TEXT to be safe for future changes."
+          @already_warned[format][oid] = true
+        end
+        super
+      end
+    end
 
-	def initialize(connection_or_coder_maps, registry: nil)
-		@coder_maps = build_coder_maps(connection_or_coder_maps, registry: registry)
+    def initialize(connection_or_coder_maps, registry: nil)
+      @coder_maps = build_coder_maps(connection_or_coder_maps, registry: registry)
 
-		# Populate TypeMapByOid hash with decoders
-		@coder_maps.each_format(:decoder).flat_map{|f| f.coders }.each do |coder|
-			add_coder(coder)
-		end
+      # Populate TypeMapByOid hash with decoders
+      @coder_maps.each_format(:decoder).flat_map(&:coders).each do |coder|
+        add_coder(coder)
+      end
 
-		typenames = @coder_maps.typenames_by_oid
-		self.default_type_map = WarningTypeMap.new(typenames)
-	end
+      typenames = @coder_maps.typenames_by_oid
+      self.default_type_map = WarningTypeMap.new(typenames)
+    end
+  end
 end

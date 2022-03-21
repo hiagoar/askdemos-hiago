@@ -18,90 +18,80 @@ require 'optparse'
 require 'etc'
 require 'pg'
 
-
 ### PostgreSQL Stats.  Fetch information from pg_stat_* tables.
 ### Optionally run in a continuous loop, displaying deltas.
 ###
 class Stats
-	VERSION = %q$Id$
+  VERSION = 'Id'.freeze
 
-	def initialize( opts )
-		@opts = opts
-		@db   = PG.connect(
-			:dbname   => opts.database,
-			:host     => opts.host,
-			:port     => opts.port,
-			:user     => opts.user,
-			:password => opts.pass,
-			:sslmode  => 'prefer'
-		)
-		@last = nil
-	end
+  def initialize(opts)
+    @opts = opts
+    @db   = PG.connect(
+      dbname: opts.database,
+      host: opts.host,
+      port: opts.port,
+      user: opts.user,
+      password: opts.pass,
+      sslmode: 'prefer'
+    )
+    @last = nil
+  end
 
-	######
-	public
-	######
+  ######
 
-	### Primary loop.  Gather statistics and generate deltas.
-	###
-	def run
-		run_count = 0
+  ######
 
-		loop do
-			current_stat = self.get_stats
+  ### Primary loop.  Gather statistics and generate deltas.
+  ###
+  def run
+    run_count = 0
 
-			# First run, store and continue
-			#
-			if @last.nil?
-				@last = current_stat
-				sleep @opts.interval
-				next
-			end
+    loop do
+      current_stat = get_stats
 
-			# headers
-			#
-			if run_count == 0 || run_count % 50 == 0
-				puts "%-20s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s" % %w[
-					time commits rollbks blksrd blkshit bkends seqscan
-					seqtprd idxscn idxtrd ins upd del locks activeq
-				]
-			end
+      # First run, store and continue
+      #
+      if @last.nil?
+        @last = current_stat
+        sleep @opts.interval
+        next
+      end
 
-			# calculate deltas
-			#
-			delta = current_stat.inject({}) do |h, pair|
-				stat, val = *pair
+      # headers
+      #
+      if run_count.zero? || (run_count % 50).zero?
+        puts format('%-20s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s', time, commits, rollbks, blksrd,
+                    blkshit, bkends, seqscan, seqtprd, idxscn, idxtrd, ins, upd, del, locks, activeq)
+      end
 
-				if %w[ activeq locks bkends ].include?( stat )
-					h[stat] = current_stat[stat].to_i
-				else
-					h[stat] = current_stat[stat].to_i - @last[stat].to_i
-				end
+      # calculate deltas
+      #
+      delta = current_stat.each_with_object({}) do |pair, h|
+        stat, val = *pair
 
-				h
-			end
-			delta[ 'time' ] = Time.now.strftime('%F %T')
+        h[stat] = if %w[activeq locks bkends].include?(stat)
+                    current_stat[stat].to_i
+                  else
+                    current_stat[stat].to_i - @last[stat].to_i
+                  end
+      end
+      delta['time'] = Time.now.strftime('%F %T')
 
-			# new values
-			#
-			puts "%-20s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s" % [
-				delta['time'], delta['commits'], delta['rollbks'], delta['blksrd'],
-				delta['blkshit'], delta['bkends'], delta['seqscan'],
-				delta['seqtprd'], delta['idxscn'], delta['idxtrd'],
-				delta['ins'], delta['upd'], delta['del'], delta['locks'], delta['activeq']
-			]
+      # new values
+      #
+      puts format('%-20s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s', delta['time'], delta['commits'],
+                  delta['rollbks'], delta['blksrd'], delta['blkshit'], delta['bkends'], delta['seqscan'], delta['seqtprd'], delta['idxscn'], delta['idxtrd'], delta['ins'], delta['upd'], delta['del'], delta['locks'], delta['activeq'])
 
-			@last = current_stat
-			run_count += 1
-			sleep @opts.interval
-		end
-	end
+      @last = current_stat
+      run_count += 1
+      sleep @opts.interval
+    end
+  end
 
-
-	### Query the database for performance measurements.  Returns a hash.
-	###
-	def get_stats
-		res = @db.exec %Q{
+  ### Query the database for performance measurements.  Returns a hash.
+  ###
+  def get_stats
+    res = @db.exec format(%{
 			SELECT
 				MAX(stat_db.xact_commit)       AS commits,
 				MAX(stat_db.xact_rollback)     AS rollbks,
@@ -124,89 +114,87 @@ class Stats
 				(SELECT COUNT(*) AS sess FROM pg_stat_activity WHERE current_query <> '<IDLE>') AS activity
 			WHERE
 				stat_db.datname = '%s';
-		} % [ @opts.database ]
+		}, @opts.database)
 
-		return res[0]
-	end
+    res[0]
+  end
 end
-
 
 ### Parse command line arguments.  Return a struct of global options.
 ###
-def parse_args( args )
-	options          = OpenStruct.new
-	options.database = Etc.getpwuid( Process.uid ).name
-	options.host     = '127.0.0.1'
-	options.port     = 5432
-	options.user     = Etc.getpwuid( Process.uid ).name
-	options.sslmode  = 'disable'
-	options.interval = 5
+def parse_args(args)
+  options = OpenStruct.new
+  options.database = Etc.getpwuid(Process.uid).name
+  options.host     = '127.0.0.1'
+  options.port     = 5432
+  options.user     = Etc.getpwuid(Process.uid).name
+  options.sslmode  = 'disable'
+  options.interval = 5
 
-	opts = OptionParser.new do |opts|
-		opts.banner = "Usage: #{$0} [options]"
+  opts = OptionParser.new do |opts|
+    opts.banner = "Usage: #{$PROGRAM_NAME} [options]"
 
-		opts.separator ''
-		opts.separator 'Connection options:'
+    opts.separator ''
+    opts.separator 'Connection options:'
 
-		opts.on( '-d', '--database DBNAME',
-				"specify the database to connect to (default: \"#{options.database}\")" ) do |db|
-			options.database = db
-		end
+    opts.on('-d', '--database DBNAME',
+            "specify the database to connect to (default: \"#{options.database}\")") do |db|
+      options.database = db
+    end
 
-		opts.on( '-h', '--host HOSTNAME', 'database server host' ) do |host|
-			options.host = host
-		end
+    opts.on('-h', '--host HOSTNAME', 'database server host') do |host|
+      options.host = host
+    end
 
-		opts.on( '-p', '--port PORT', Integer,
-				"database server port (default: \"#{options.port}\")" ) do |port|
-			options.port = port
-		end
+    opts.on('-p', '--port PORT', Integer,
+            "database server port (default: \"#{options.port}\")") do |port|
+      options.port = port
+    end
 
-		opts.on( '-U', '--user NAME',
-				"database user name (default: \"#{options.user}\")" ) do |user|
-			options.user = user
-		end
+    opts.on('-U', '--user NAME',
+            "database user name (default: \"#{options.user}\")") do |user|
+      options.user = user
+    end
 
-		opts.on( '-W', 'force password prompt' ) do |pw|
-			print 'Password: '
-			begin
-				system 'stty -echo'
-				options.pass = gets.chomp
-			ensure
-				system 'stty echo'
-				puts
-			end
-		end
+    opts.on('-W', 'force password prompt') do |_pw|
+      print 'Password: '
+      begin
+        system 'stty -echo'
+        options.pass = gets.chomp
+      ensure
+        system 'stty echo'
+        puts
+      end
+    end
 
-		opts.separator ''
-		opts.separator 'Other options:'
+    opts.separator ''
+    opts.separator 'Other options:'
 
-		opts.on( '-i', '--interval SECONDS', Integer,
-				 "refresh interval in seconds (default: \"#{options.interval}\")") do |seconds|
-			options.interval = seconds
-		end
+    opts.on('-i', '--interval SECONDS', Integer,
+            "refresh interval in seconds (default: \"#{options.interval}\")") do |seconds|
+      options.interval = seconds
+    end
 
-		opts.on_tail( '--help', 'show this help, then exit' ) do
-			$stderr.puts opts
-			exit
-		end
+    opts.on_tail('--help', 'show this help, then exit') do
+      warn opts
+      exit
+    end
 
-		opts.on_tail( '--version', 'output version information, then exit' ) do
-			puts Stats::VERSION
-			exit
-		end
-	end
+    opts.on_tail('--version', 'output version information, then exit') do
+      puts Stats::VERSION
+      exit
+    end
+  end
 
-	opts.parse!( args )
-	return options
+  opts.parse!(args)
+  options
 end
-
 
 ### Go!
 ###
-if __FILE__ == $0
-	$stdout.sync = true
-	Stats.new( parse_args( ARGV ) ).run
+if __FILE__ == $PROGRAM_NAME
+  $stdout.sync = true
+  Stats.new(parse_args(ARGV)).run
 end
 
 

@@ -9,30 +9,28 @@
 # Based on work by Jeff Davis <ruby@j-davis.com>.
 #
 
-
 require 'ostruct'
 require 'optparse'
 require 'etc'
 require 'pg'
 
-SCRIPT_VERSION = %q$Id$
-
+SCRIPT_VERSION = 'Id'.freeze
 
 ### Gather data and output it to $stdout.
 ###
-def report( opts )
-	db = PG.connect(
-		:dbname   => opts.database,
-		:host     => opts.host,
-		:port     => opts.port,
-		:user     => opts.user,
-		:password => opts.pass,
-		:sslmode  => 'prefer'
-	)
+def report(opts)
+  db = PG.connect(
+    dbname: opts.database,
+    host: opts.host,
+    port: opts.port,
+    user: opts.user,
+    password: opts.pass,
+    sslmode: 'prefer'
+  )
 
-	# -----------------------------------------
+  # -----------------------------------------
 
-	db_info = db.exec %Q{
+  db_info = db.exec %{
 		SELECT
 			count(oid) AS num_relations,
 			pg_size_pretty(pg_database_size('#{opts.database}')) AS dbsize
@@ -40,17 +38,14 @@ def report( opts )
 			pg_class
 	}
 
-	puts '=' * 70
-	puts "Disk usage information for %s: (%d relations, %s total)" % [
-		opts.database,
-		db_info[0]['num_relations'],
-		db_info[0]['dbsize']
-	]
-	puts '=' * 70
+  puts '=' * 70
+  puts format('Disk usage information for %s: (%d relations, %s total)', opts.database, db_info[0]['num_relations'],
+              db_info[0]['dbsize'])
+  puts '=' * 70
 
-	# -----------------------------------------
+  # -----------------------------------------
 
-	top_twenty = db.exec %q{
+  top_twenty = db.exec '
 		SELECT
 			relname AS name,
 			relkind AS kind,
@@ -60,26 +55,26 @@ def report( opts )
 		ORDER BY
 			pg_relation_size(pg_class.oid) DESC
 		LIMIT 20
-	}
+	'
 
-	puts 'Top twenty objects by size:'
-	puts '-' * 70
-	top_twenty.each do |row|
-		type = case row['kind']
-			   when 'i'; 'index'
-			   when 't'; 'toast'
-			   when 'r'; 'table'
-			   when 'S'; 'sequence'
-			   else;     '???'
-			   end
+  puts 'Top twenty objects by size:'
+  puts '-' * 70
+  top_twenty.each do |row|
+    type = case row['kind']
+           when 'i' then 'index'
+           when 't' then 'toast'
+           when 'r' then 'table'
+           when 'S' then 'sequence'
+           else; '???'
+           end
 
-		puts "%40s %10s (%s)" % [ row['name'], row['size'], type ]
-	end
-	puts '-' * 70
+    puts format('%40s %10s (%s)', row['name'], row['size'], type)
+  end
+  puts '-' * 70
 
-	# -----------------------------------------
+  # -----------------------------------------
 
-	schema_sizes = db.exec %q{
+  schema_sizes = db.exec "
 		SELECT
 			table_schema,
 			pg_size_pretty( CAST( SUM(pg_total_relation_size(table_schema || '.' || table_name)) AS bigint)) AS size
@@ -89,89 +84,85 @@ def report( opts )
 			table_schema
 		ORDER BY
 			CAST( SUM(pg_total_relation_size(table_schema || '.' || table_name)) AS bigint ) DESC
-	}
+	"
 
+  puts 'Size per schema:'
+  puts '-' * 70
+  schema_sizes.each do |row|
+    puts format('%20s %10s', row['table_schema'], row['size'])
+  end
+  puts '-' * 70
+  puts
 
-	puts 'Size per schema:'
-	puts '-' * 70
-	schema_sizes.each do |row|
-		puts "%20s %10s" % [ row['table_schema'], row['size'] ]
-	end
-	puts '-' * 70
-	puts
-
-	db.finish
+  db.finish
 end
-
 
 ### Parse command line arguments.  Return a struct of global options.
 ###
-def parse_args( args )
-	options          = OpenStruct.new
-	options.database = Etc.getpwuid( Process.uid ).name
-	options.host     = '127.0.0.1'
-	options.port     = 5432
-	options.user     = Etc.getpwuid( Process.uid ).name
-	options.sslmode  = 'prefer'
-	options.interval = 5
+def parse_args(args)
+  options = OpenStruct.new
+  options.database = Etc.getpwuid(Process.uid).name
+  options.host     = '127.0.0.1'
+  options.port     = 5432
+  options.user     = Etc.getpwuid(Process.uid).name
+  options.sslmode  = 'prefer'
+  options.interval = 5
 
-	opts = OptionParser.new do |opts|
-		opts.banner = "Usage: #{$0} [options]"
+  opts = OptionParser.new do |opts|
+    opts.banner = "Usage: #{$PROGRAM_NAME} [options]"
 
-		opts.separator ''
-		opts.separator 'Connection options:'
+    opts.separator ''
+    opts.separator 'Connection options:'
 
-		opts.on( '-d', '--database DBNAME',
-				"specify the database to connect to (default: \"#{options.database}\")" ) do |db|
-			options.database = db
-		end
+    opts.on('-d', '--database DBNAME',
+            "specify the database to connect to (default: \"#{options.database}\")") do |db|
+      options.database = db
+    end
 
-		opts.on( '-h', '--host HOSTNAME', 'database server host' ) do |host|
-			options.host = host
-		end
+    opts.on('-h', '--host HOSTNAME', 'database server host') do |host|
+      options.host = host
+    end
 
-		opts.on( '-p', '--port PORT', Integer,
-				"database server port (default: \"#{options.port}\")" ) do |port|
-			options.port = port
-		end
+    opts.on('-p', '--port PORT', Integer,
+            "database server port (default: \"#{options.port}\")") do |port|
+      options.port = port
+    end
 
-		opts.on( '-U', '--user NAME',
-				"database user name (default: \"#{options.user}\")" ) do |user|
-			options.user = user
-		end
+    opts.on('-U', '--user NAME',
+            "database user name (default: \"#{options.user}\")") do |user|
+      options.user = user
+    end
 
-		opts.on( '-W', 'force password prompt' ) do |pw|
-			print 'Password: '
-			begin
-				system 'stty -echo'
-				options.pass = gets.chomp
-			ensure
-				system 'stty echo'
-				puts
-			end
-		end
+    opts.on('-W', 'force password prompt') do |_pw|
+      print 'Password: '
+      begin
+        system 'stty -echo'
+        options.pass = gets.chomp
+      ensure
+        system 'stty echo'
+        puts
+      end
+    end
 
-		opts.separator ''
-		opts.separator 'Other options:'
+    opts.separator ''
+    opts.separator 'Other options:'
 
-		opts.on_tail( '--help', 'show this help, then exit' ) do
-			$stderr.puts opts
-			exit
-		end
+    opts.on_tail('--help', 'show this help, then exit') do
+      warn opts
+      exit
+    end
 
-		opts.on_tail( '--version', 'output version information, then exit' ) do
-			puts SCRIPT_VERSION
-			exit
-		end
-	end
+    opts.on_tail('--version', 'output version information, then exit') do
+      puts SCRIPT_VERSION
+      exit
+    end
+  end
 
-	opts.parse!( args )
-	return options
+  opts.parse!(args)
+  options
 end
 
-
-if __FILE__ == $0
-	opts = parse_args( ARGV )
-	report( opts )
+if __FILE__ == $PROGRAM_NAME
+  opts = parse_args(ARGV)
+  report(opts)
 end
-

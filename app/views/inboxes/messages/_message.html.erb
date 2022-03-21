@@ -1,25 +1,26 @@
 <div id="<%= dom_id message %>" class="scaffold_record">
-  <p>
-    <strong>Body:</strong>
-    <%= simple_format(message.body) %>
-  </p>
+  <%= simple_format(message.body) %>
 
-  <p>
-    <strong>Inbox:</strong>
-    <%= link_to message.inbox.name, message.inbox %>
-  </p>
-
-  <% if current_user.voted_for? message %>
-    <%= button_to 'Downvote', [:upvote, @inbox, message], method: :patch, data: { turbo: 'false' } %>
+  <% if current_user.voted_up_on? message %>
+    Unvote!
   <% else %>
-    <%= button_to 'Upvote', [:upvote, @inbox, message], method: :patch, data: { turbo: 'false' } %>
+    UP
   <% end %>
-  Total: <%= message.weighted_score %>
 
-  <p>
-    <strong>User:</strong>
+
+  <%= button_to 'Upvote', [:upvote, @inbox, message], method: :patch %>
+
+  <div id="message_score">
+    Total: <%= message.cached_votes_total %>
+  </div>
+  
+  <br>
+  <i>
+    by
     <%= message.user.email %>
-  </p>
+    on
+    <%= message.created_at.strftime('%d/%b/%Y %H:%M') %>
+  </i>
 
   <%= button_to "Destroy", inbox_message_path(@inbox, message), method: :delete %>
 

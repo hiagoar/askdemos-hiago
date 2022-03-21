@@ -53,340 +53,323 @@
 #
 #========================================================================================
 
-
+require 'English'
+require 'English'
 require 'pathname'
 require 'yaml'
 require 'fileutils'
 require 'ostruct'
 
-
 ### Encapsulate WAL shipping functionality.
 ###
 module WalShipper
+  ### Send messages to the PostgreSQL log files.
+  ###
+  def log(msg)
+    return unless @debug
 
-	### Send messages to the PostgreSQL log files.
-	###
-	def log( msg )
-		return unless @debug
-		puts "WAL Shipper: %s" % [ msg ]
-	end
+    puts format('WAL Shipper: %s', msg)
+  end
 
+  ### An object that represents a single destination from the
+  ### configuration file.
+  ###
+  class Destination < OpenStruct
+    include WalShipper
 
-	### An object that represents a single destination from the
-	### configuration file.
-	###
-	class Destination < OpenStruct
-		include WalShipper
+    ### Create a new WalShipper::Destination object.
+    def initialize(dest, debug = false)
+      @debug = debug
+      super(dest)
+      validate
+    end
 
-		### Create a new WalShipper::Destination object.
-		def initialize( dest, debug=false )
-			@debug = debug
-			super( dest )
-			self.validate
-		end
+    #########
+    protected
 
-		#########
-		protected
-		#########
+    #########
 
+    ### Check for required keys and normalize various keys.
+    ###
+    def validate
+      # Check for required destination keys
+      %w[label kind].each do |key|
+        if send(key.to_sym).nil?
+          log format("Destination %p missing required '%s' key.", self, key)
+          self.invalid = true
+        end
+      end
 
-		### Check for required keys and normalize various keys.
-		###
-		def validate
-			# Check for required destination keys
-			%w[ label kind ].each do |key|
-				if self.send( key.to_sym ).nil?
-					self.log "Destination %p missing required '%s' key." % [ self, key ]
-					self.invalid = true
-				end
-			end
+      # Ensure paths are Pathnames for the 'file' destination type.
+      self.path = Pathname.new(path) if kind == 'file'
 
-			# Ensure paths are Pathnames for the 'file' destination type.
-			self.path = Pathname.new( self.path ) if self.kind == 'file'
+      if kind == 'rsync-ssh'
+        self.port ||= 22
+        self.user = user ? "#{user}@" : ''
+      end
+    end
+  end
 
-			if self.kind == 'rsync-ssh'
-				self.port ||= 22
-				self.user = self.user ? "#{self.user}@" : ''
-			end
-		end
-	end # Class Destination
+  ### Class for creating new Destination objects and determining how to
+  ### ship WAL files to them.
+  ###
+  class Dispatcher
+    include WalShipper
 
+    ### Create a new Shipper object, given a +conf+ hash and a +wal+ file
+    ### Pathname object.
+    ###
+    def initialize(wal, conf)
+      # Make the config keys instance variables.
+      conf.each_pair { |key, val| instance_variable_set("@#{key}", val) }
 
+      # Spool directory check.
+      #
+      @spool = Pathname.new(@spool)
+      @spool.exist? or raise format("The configured spool directory (%s) doesn't exist.", @spool)
 
-	### Class for creating new Destination objects and determining how to
-	### ship WAL files to them.
-	###
-	class Dispatcher
-		include WalShipper
+      # Stop right away if we have disabled shipping.
+      #
+      unless @enabled
+        log format('WAL shipping is disabled, queuing segment %s', wal.basename)
+        exit 1
+      end
 
-		### Create a new Shipper object, given a +conf+ hash and a +wal+ file
-		### Pathname object.
-		###
-		def initialize( wal, conf )
-			# Make the config keys instance variables.
-			conf.each_pair {|key, val| self.instance_variable_set( "@#{key}", val ) }
+      # Instantiate Destination objects, creating new spool directories
+      # for each.
+      #
+      @destinations
+        .collect! { |dest| WalShipper::Destination.new(dest, @debug) }
+        .reject(&:invalid)
+        .collect do |dest|
+        dest.spool = @spool + dest.label
+        dest.spool.mkdir(0o711) unless dest.spool.exist?
+        dest
+      end
 
-			# Spool directory check.
-			#
-			@spool = Pathname.new( @spool )
-			@spool.exist? or raise "The configured spool directory (%s) doesn't exist." % [ @spool ]
+      # Put the WAL file into the spool for processing!
+      #
+      @waldir = "#{@spool}wal_segments"
+      @waldir.mkdir(0o711) unless @waldir.exist?
 
-			# Stop right away if we have disabled shipping.
-			#
-			unless @enabled
-				self.log "WAL shipping is disabled, queuing segment %s" % [ wal.basename ]
-				exit 1
-			end
+      log format('Copying %s to %s', wal.basename, @waldir)
+      FileUtils.cp wal, @waldir
 
-			# Instantiate Destination objects, creating new spool directories
-			# for each.
-			#
-			@destinations.
-				collect!{|dest| WalShipper::Destination.new( dest, @debug ) }.
-				reject  {|dest| dest.invalid }.
-				collect do |dest|
-					dest.spool = @spool + dest.label
-					dest.spool.mkdir( 0711 ) unless dest.spool.exist?
-					dest
-				end
+      # 'wal' now references the copy.  The original is managed and auto-expired
+      # by PostgreSQL when a new checkpoint segment it reached.
+      @wal = @waldir + wal.basename
+    end
 
-			# Put the WAL file into the spool for processing!
-			#
-			@waldir = @spool + 'wal_segments'
-			@waldir.mkdir( 0711 ) unless @waldir.exist?
+    ### Create hardlinks for the WAL file into each of the destination directories
+    ### for separate queueing and recording of what was shipped successfully.
+    ###
+    def link
+      @destinations.each do |dest|
+        log format('Linking %s into %s', @wal.basename, dest.spool.basename)
+        FileUtils.ln @wal, dest.spool, force: true
+      end
+    end
 
-			self.log "Copying %s to %s" % [ wal.basename, @waldir ]
-			FileUtils::cp wal, @waldir
+    ### Decide to be synchronous or threaded, and delegate each destination
+    ### to the proper ship method.
+    ###
+    def dispatch
+      # Synchronous mode.
+      #
+      unless @async
+        log 'Performing a synchronous dispatch.'
+        @destinations.each { |dest| dispatch_dest(dest) }
+        return
+      end
 
-			# 'wal' now references the copy.  The original is managed and auto-expired
-			# by PostgreSQL when a new checkpoint segment it reached.
-			@wal = @waldir + wal.basename
-		end
+      tg = ThreadGroup.new
 
+      # Async, one thread per destination
+      #
+      if @async_max.nil? || @async_max.to_i.zero?
+        log 'Performing an asynchronous dispatch: one thread per destination.'
+        @destinations.each do |dest|
+          t = Thread.new do
+            Thread.current.abort_on_exception = true
+            dispatch_dest(dest)
+          end
+          tg.add(t)
+        end
+        tg.list.each(&:join)
+        return
+      end
 
-		### Create hardlinks for the WAL file into each of the destination directories
-		### for separate queueing and recording of what was shipped successfully.
-		###
-		def link
-			@destinations.each do |dest|
-				self.log "Linking %s into %s" % [ @wal.basename, dest.spool.basename ]
-				FileUtils::ln @wal, dest.spool, :force => true
-			end
-		end
+      # Async, one thread per destination, in groups of asynx_max size.
+      #
+      log format('Performing an asynchronous dispatch: one thread per destination, %d at a time.', @async_max)
+      all_dests = @destinations.dup
+      dest_chunks = []
+      dest_chunks << all_dests.slice!(0, @async_max) until all_dests.empty?
 
+      dest_chunks.each do |chunk|
+        chunk.each do |dest|
+          t = Thread.new do
+            Thread.current.abort_on_exception = true
+            dispatch_dest(dest)
+          end
+          tg.add(t)
+        end
 
-		### Decide to be synchronous or threaded, and delegate each destination
-		### to the proper ship method.
-		###
-		def dispatch
-			# Synchronous mode.
-			#
-			unless @async
-				self.log "Performing a synchronous dispatch."
-				@destinations.each {|dest| self.dispatch_dest( dest ) }
-				return
-			end
+        tg.list.each(&:join)
+      end
 
-			tg = ThreadGroup.new
+      nil
+    end
 
-			# Async, one thread per destination
-			#
-			if @async_max.nil? || @async_max.to_i.zero?
-				self.log "Performing an asynchronous dispatch: one thread per destination."
-				@destinations.each do |dest|
-					t = Thread.new do
-						Thread.current.abort_on_exception = true
-						self.dispatch_dest( dest )
-					end
-					tg.add( t )
-				end
-				tg.list.each {|t| t.join }
-				return
-			end
+    ### Remove any WAL segments no longer needed by slaves.
+    ###
+    def clean_spool
+      total = 0
+      @waldir.children.each do |wal|
+        total += wal.unlink if wal.stat.nlink == 1
+      end
 
-			# Async, one thread per destination, in groups of asynx_max size.
-			#
-			self.log "Performing an asynchronous dispatch: one thread per destination, %d at a time." % [ @async_max ]
-			all_dests = @destinations.dup
-			dest_chunks = []
-			until all_dests.empty? do
-				dest_chunks << all_dests.slice!( 0, @async_max )
-			end
+      log format('Removed %d WAL segment%s.', total, total == 1 ? '' : 's')
+    end
 
-			dest_chunks.each do |chunk|
-				chunk.each do |dest|
-					t = Thread.new do
-						Thread.current.abort_on_exception = true
-						self.dispatch_dest( dest )
-					end
-					tg.add( t )
-				end
+    #########
+    protected
 
-				tg.list.each {|t| t.join }
-			end
+    #########
 
-			return
-		end
+    ### Send WAL segments to remote +dest+ via rsync+ssh.
+    ### Passwordless keys between the user running this script (postmaster owner)
+    ### and remote user need to be set up in advance.
+    ###
+    def ship_rsync_ssh(dest)
+      if dest.host.nil?
+        log format("Destination %p missing required 'host' key.  WAL is queued.", dest.host)
+        return
+      end
 
+      rsync_flags = '-zc'
+      ssh_string = format('%s -o ConnectTimeout=%d -o StrictHostKeyChecking=no -p %d', @ssh, @ssh_timeout || 10,
+                          dest.port)
+      src_string = ''
+      dst_string = format('%s%s:%s/', dest.user, dest.host, dest.path)
 
-		### Remove any WAL segments no longer needed by slaves.
-		###
-		def clean_spool
-			total = 0
-			@waldir.children.each do |wal|
-				if wal.stat.nlink == 1
-					total += wal.unlink
-				end
-			end
+      # If there are numerous files in the spool dir, it means there was
+      # an error transferring to this host in the past.  Try and ship all
+      # WAL segments, instead of just the new one.  PostgreSQL on the slave
+      # side will "do the right thing" as they come in, regardless of
+      # ordering.
+      #
+      if dest.spool.children.length > 1
+        src_string = "#{dest.spool}/"
+        rsync_flags << 'r'
+      else
+        src_string = dest.spool + @wal.basename
+      end
 
-			self.log "Removed %d WAL segment%s." % [ total, total == 1 ? '' : 's' ]
-		end
+      ship_wal_cmd = [
+        @rsync,
+        @debug ? (rsync_flags << 'vh') : (rsync_flags << 'q'),
+        '--remove-source-files',
+        '-e', ssh_string,
+        src_string, dst_string
+      ]
 
+      log format("Running command '%s'", ship_wal_cmd.join(' '))
+      system(*ship_wal_cmd)
 
+      # Run external notification program on error, if one is configured.
+      #
+      unless $CHILD_STATUS.success?
+        log format('Ack!  Error while shipping to %p, WAL is queued.', dest.label)
+        system @error_cmd, dest.label if @error_cmd
+      end
+    end
 
-		#########
-		protected
-		#########
+    ### Copy WAL segments to remote path as set in +dest+.
+    ### This is useful for longer term PITR, copying to NFS shares, etc.
+    ###
+    def ship_file(dest)
+      if dest.path.nil?
+        log format("Destination %p missing required 'path' key.  WAL is queued.", dest)
+        return
+      end
+      dest.path.mkdir(0o711) unless dest.path.exist?
 
-		### Send WAL segments to remote +dest+ via rsync+ssh.
-		### Passwordless keys between the user running this script (postmaster owner)
-		### and remote user need to be set up in advance.
-		###
-		def ship_rsync_ssh( dest )
-			if dest.host.nil?
-				self.log "Destination %p missing required 'host' key.  WAL is queued." % [ dest.host ]
-				return
-			end
+      # If there are numerous files in the spool dir, it means there was
+      # an error transferring to this host in the past.  Try and ship all
+      # WAL segments, instead of just the new one.  PostgreSQL on the slave
+      # side will "do the right thing" as they come in, regardless of
+      # ordering.
+      #
+      if dest.spool.children.length > 1
+        dest.spool.children.each do |wal|
+          wal.unlink if copy_file(wal, dest.path, dest.label, dest.compress)
+        end
+      else
+        wal = dest.spool + @wal.basename
+        wal.unlink if copy_file(wal, dest.path, dest.label, dest.compress)
+      end
+    end
 
-			rsync_flags = '-zc'
-			ssh_string = "%s -o ConnectTimeout=%d -o StrictHostKeyChecking=no -p %d" %
-				[ @ssh, @ssh_timeout || 10, dest.port ]
-			src_string = ''
-			dst_string = "%s%s:%s/" % [ dest.user, dest.host, dest.path ]
+    ### Given a +wal+ Pathname, a +path+ destination, and the destination
+    ### label, copy and optionally compress a WAL file.
+    ###
+    def copy_file(wal, path, label, compress = false)
+      dest_file = path + wal.basename
+      FileUtils.cp wal, dest_file
+      if compress
+        system('gzip', '-f', dest_file)
+        raise format('Error while compressing: %s', wal.basename) unless $CHILD_STATUS.success?
+      end
+      log format('Copied %s%s to %s.', wal.basename, compress ? ' (and compressed)' : '', path)
+      true
+    rescue StandardError => e
+      log format("Ack!  Error while copying '%s' (%s) to %p, WAL is queued.", wal.basename, e.message, path)
+      system @error_cmd, label if @error_cmd
+      false
+    end
 
-			# If there are numerous files in the spool dir, it means there was
-			# an error transferring to this host in the past.  Try and ship all
-			# WAL segments, instead of just the new one.  PostgreSQL on the slave
-			# side will "do the right thing" as they come in, regardless of
-			# ordering.
-			#
-			if dest.spool.children.length > 1
-				src_string = dest.spool.to_s + '/'
-				rsync_flags << 'r'
-			else
-				src_string = dest.spool + @wal.basename
-			end
+    ### Figure out how to send the WAL file to its intended destination +dest+.
+    ###
+    def dispatch_dest(dest)
+      if !dest.enabled.nil? && !dest.enabled
+        log format('Skipping explicitly disabled destination %p, WAL is queued.', dest.label)
+        return
+      end
 
-
-			ship_wal_cmd = [
-				@rsync,
-				@debug ? (rsync_flags << 'vh') : (rsync_flags << 'q'),
-				'--remove-source-files',
-				'-e', ssh_string,
-				src_string, dst_string
-			]
-
-			self.log "Running command '%s'" % [ ship_wal_cmd.join(' ') ]
-			system *ship_wal_cmd
-
-			# Run external notification program on error, if one is configured.
-			#
-			unless $?.success?
-				self.log "Ack!  Error while shipping to %p, WAL is queued." % [ dest.label ]
-				system @error_cmd, dest.label if @error_cmd
-			end
-		end
-
-
-		### Copy WAL segments to remote path as set in +dest+.
-		### This is useful for longer term PITR, copying to NFS shares, etc.
-		###
-		def ship_file( dest )
-			if dest.path.nil?
-				self.log "Destination %p missing required 'path' key.  WAL is queued." % [ dest ]
-				return
-			end
-			dest.path.mkdir( 0711 ) unless dest.path.exist?
-
-			# If there are numerous files in the spool dir, it means there was
-			# an error transferring to this host in the past.  Try and ship all
-			# WAL segments, instead of just the new one.  PostgreSQL on the slave
-			# side will "do the right thing" as they come in, regardless of
-			# ordering.
-			#
-			if dest.spool.children.length > 1
-				dest.spool.children.each do |wal|
-					wal.unlink if self.copy_file( wal, dest.path, dest.label, dest.compress )
-				end
-			else
-				wal = dest.spool + @wal.basename
-				wal.unlink if self.copy_file( wal, dest.path, dest.label, dest.compress )
-			end
-		end
-
-
-		### Given a +wal+ Pathname, a +path+ destination, and the destination
-		### label, copy and optionally compress a WAL file.
-		###
-		def copy_file( wal, path, label, compress=false )
-			dest_file = path + wal.basename
-			FileUtils::cp wal, dest_file
-			if compress
-				system *[ 'gzip', '-f', dest_file ]
-				raise "Error while compressing: %s" % [ wal.basename ] unless $?.success?
-			end
-			self.log "Copied %s%s to %s." %
-				[ wal.basename, compress ? ' (and compressed)' : '', path ]
-			return true
-		rescue => err
-			self.log "Ack!  Error while copying '%s' (%s) to %p, WAL is queued." %
-				[ wal.basename, err.message, path ]
-			system @error_cmd, label if @error_cmd
-			return false
-		end
-
-
-		### Figure out how to send the WAL file to its intended destination +dest+.
-		###
-		def dispatch_dest( dest )
-			if ! dest.enabled.nil? && ! dest.enabled
-				self.log "Skipping explicitly disabled destination %p, WAL is queued." % [ dest.label ]
-				return
-			end
-
-			# Send to the appropriate method.  ( rsync-ssh --> ship_rsync_ssh )
-			#
-			meth = ( 'ship_' + dest.kind.gsub(/-/, '_') ).to_sym
-			if WalShipper::Dispatcher.method_defined?( meth )
-				self.send( meth, dest )
-			else
-				self.log "Unknown destination kind %p for %p.  WAL is queued." % [ dest.kind, dest.label ]
-			end
-		end
-	end
+      # Send to the appropriate method.  ( rsync-ssh --> ship_rsync_ssh )
+      #
+      meth = "ship_#{dest.kind.gsub(/-/, '_')}".to_sym
+      if WalShipper::Dispatcher.method_defined?(meth)
+        send(meth, dest)
+      else
+        log format('Unknown destination kind %p for %p.  WAL is queued.', dest.kind, dest.label)
+      end
+    end
+  end
 end
 
 # Ship the WAL file!
 #
-if __FILE__ == $0
-	CONFIG_DIR = Pathname.new( __FILE__ ).dirname.parent + 'etc'
-	CONFIG     = CONFIG_DIR + 'wal_shipper.conf'
+if __FILE__ == $PROGRAM_NAME
+  CONFIG_DIR = "#{Pathname.new(__FILE__).dirname.parent}etc".freeze
+  CONFIG = "#{CONFIG_DIR}wal_shipper.conf".freeze
 
-	unless CONFIG.exist?
-		CONFIG_DIR.mkdir( 0711 ) unless CONFIG_DIR.exist?
-		CONFIG.open('w') {|conf| conf.print(DATA.read) }
-		CONFIG.chmod( 0644 )
-		puts "No WAL shipping configuration found, default file created."
-	end
+  unless CONFIG.exist?
+    CONFIG_DIR.mkdir(0o711) unless CONFIG_DIR.exist?
+    CONFIG.open('w') { |conf| conf.print(DATA.read) }
+    CONFIG.chmod(0o644)
+    puts 'No WAL shipping configuration found, default file created.'
+  end
 
-	wal  = ARGV[0] or raise "No WAL file was specified on the command line."
-	wal  = Pathname.new( wal )
-	conf = YAML.load( CONFIG.read )
+  wal  = ARGV[0] or raise 'No WAL file was specified on the command line.'
+  wal  = Pathname.new(wal)
+  conf = YAML.safe_load(CONFIG.read)
 
-	shipper = WalShipper::Dispatcher.new( wal, conf )
-	shipper.link
-	shipper.dispatch
-	shipper.clean_spool
+  shipper = WalShipper::Dispatcher.new(wal, conf)
+  shipper.link
+  shipper.dispatch
+  shipper.clean_spool
 end
 
 

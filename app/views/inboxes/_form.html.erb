@@ -3,7 +3,10 @@
 
   <div>
     <%= form.label :name, style: "display: block" %>
-    <%= form.text_field :name %>
+    <%= form.color_field :theme_color %>
+    <%= form.text_field :name, autocomplete: 'off',
+                               style: 'width: 100%; padding: 5px 10px;',
+                               maxlength: Inbox::MAX_NAME %>
   </div>
 
   <div>

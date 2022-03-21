@@ -6,25 +6,27 @@
 #   movies = Movie.create([{ name: "Star Wars" }, { name: "Lord of the Rings" }])
 #   Character.create(name: "Luke", movie: movies.first)
 
+return unless Rails.env.development?
+
 Message.delete_all
 Inbox.delete_all
 User.delete_all
 
-2.times do
-	faker_email = Faker::Internet.email
+rand(2..3).times do
+	faker_email = Faker::Internet.unique.email
 	user = User.create(email: faker_email,
 										 password: Devise.friendly_token[0, 20])
 
-	rand(1..5).times do
-		faker_name = Faker::Quote.famous_last_words
+	rand(2..5).times do
+		faker_name = Faker::Lorem.unique.question(word_count: 5)
 		inbox = Inbox.create(name: faker_name,
 												 user: user)
 
-		rand(1..5).times do
-			message_body = Faker::Lorem.paragraph
-			Message.create(body: message_body,
+		rand(2..5).times do
+			faker_body = Faker::Lorem.question
+			Message.create(body: faker_body,
 										 inbox: inbox,
-										 user_id: rand(1..2))
+										 user: User.all.sample)
 		end
 	end
 end

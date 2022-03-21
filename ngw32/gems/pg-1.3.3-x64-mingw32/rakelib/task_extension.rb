@@ -30,8 +30,8 @@ module TaskExtension
   private def task_once(name, block)
     name = name.keys.first if name.is_a?(Hash)
     if block &&
-        Rake::Task.task_defined?(name) &&
-        Rake::Task[name].instance_variable_get('@task_block_location') == block.source_location
+       Rake::Task.task_defined?(name) &&
+       Rake::Task[name].instance_variable_get('@task_block_location') == block.source_location
       # task is already defined for this target and the same block
       # So skip double definition of the same action
       Rake::Task[name]
