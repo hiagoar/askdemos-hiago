@@ -9,11 +9,15 @@
   <%= f.submit %>
 <% end %>
 
-<%= sort_link(@q, :name, default_order: :desc) %>
-<%= sort_link(@q, :created_at, default_order: :desc) %>
-<%= sort_link(@q, :messages_count, default_order: :desc) %>
-<%= link_to "Clear search", request.path if request.query_parameters.any? %>
+<%= turbo_frame_tag 'search' do %>
 
-<div id="inboxes">
-  <%= render @inboxes %>
-</div>
+  <%= sort_link(@q, :name, default_order: :desc) %>
+  <%= sort_link(@q, :created_at, default_order: :desc) %>
+  <%= sort_link(@q, :messages_count, default_order: :desc) %>
+  <%= link_to "Clear search", request.path if request.query_parameters.any? %>
+
+  <div id="inboxes">
+    <%= render @inboxes %>
+  </div>
+
+<% end %>
