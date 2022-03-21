@@ -4,7 +4,9 @@ class InboxesController < ApplicationController
 
   def index
     set_meta_tags title: %w[Inboxes All]
-    @inboxes = Inbox.all
+    # @inboxes = Inbox.all
+    @q = Inbox.ransack(params[:q])
+    @inboxes = @q.result(distinct: true).order(created_at: :desc)
   end
 
   def show

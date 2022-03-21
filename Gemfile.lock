@@ -1,4 +1,13 @@
 GIT
+  remote: https://github.com/activerecord-hackery/ransack.git
+  revision: bbd4b148fe4137780034f04299e755b3c877b182
+  specs:
+    ransack (2.6.0)
+      activerecord (>= 6.0.4)
+      activesupport (>= 6.0.4)
+      i18n
+
+GIT
   remote: https://github.com/omniauth/omniauth-github.git
   revision: 1f772263c6cc00e84dabbc02beb755ba4c95f7d1
   branch: master
@@ -308,6 +317,7 @@ DEPENDENCIES
   puma (~> 5.0)
   pundit (~> 2.2)
   rails (~> 7.0.2, >= 7.0.2.2)
+  ransack!
   rubocop (~> 1.25)
   selenium-webdriver
   sprockets-rails
