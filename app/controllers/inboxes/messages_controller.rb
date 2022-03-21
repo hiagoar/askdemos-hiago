@@ -2,6 +2,13 @@ module Inboxes
   class MessagesController < ApplicationController
     before_action :set_inbox
 
+    def change_status
+      @message = @inbox.messages.find(params[:id])
+      @message.update(status: params[:status])
+      flash[:notice] = "Status for message #{@message.id} : #{@message.status}"
+      redirect_to @inbox
+    end
+
     def upvote
       @message = @inbox.messages.find(params[:id])
       @message.upvote! current_user
