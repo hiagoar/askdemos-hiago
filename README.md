@@ -8,3 +8,4 @@ This app was built after an YouTube tutorial from SupeRails (https://github.com/
 5. https://github.com/norman/friendly_id#friendlyid
 6. https://github.com/ryanto/acts_as_votable
 7. https://github.com/omniauth/omniauth
+8. https://github.com/activerecord-hackery/ransack
