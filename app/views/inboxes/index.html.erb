@@ -3,7 +3,7 @@
   <%= @inboxes.length %>
 </h1>
 
-<%= search_form_for @q, html: { autocomplete: 'off' } do |f| %>
+<%= search_form_for @q, html: { autocomplete: 'off' }, data: {turbo_frame: "search"} do |f| %>
   <%= f.label :name_cont %>
   <%= f.search_field :name_cont %>
   <%= f.submit %>
@@ -16,8 +16,9 @@
   <%= sort_link(@q, :messages_count, default_order: :desc) %>
   <%= link_to "Clear search", request.path if request.query_parameters.any? %>
 
+
+<% end %>
+
   <div id="inboxes">
     <%= render @inboxes %>
   </div>
-
-<% end %>
