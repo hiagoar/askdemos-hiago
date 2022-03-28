@@ -1,7 +1,7 @@
 This app was built after an YouTube tutorial from SupeRails (https://github.com/yshmarov) - https://www.youtube.com/watch?v=NGPhRmbBVlw& && https://www.youtube.com/watch?v=LWEMPqGhstU
 
 # App functions
-In this app users sign up and then post inboxes;
+In this app users sign up and then post inboxes; \n
 Those inboxes can be updated and/or deleted by its creators;
 In inboxes any user can post a comment;
 Comments can be flagged as 4 different status;
